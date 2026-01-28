@@ -10,33 +10,41 @@ const PORT = 3000;
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
 
+// Storage para sa maraming API instances
 const apiInstances = new Map(); 
 const cooldowns = new Map();
 
 // --------------------
-// DIRECTORY & FILE INITIALIZER
+// AUTO-CREATE DIRECTORIES & FILES
 // --------------------
 const requiredDirs = ['accounts', 'cmds', 'events'];
 requiredDirs.forEach(dir => {
-    if (!fs.existsSync(path.join(__dirname, dir))) {
-        fs.mkdirSync(path.join(__dirname, dir));
+    const dirPath = path.join(__dirname, dir);
+    if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath);
         console.log(`[SYSTEM] Created directory: /${dir}`);
     }
 });
 
 const ACCOUNTS_DIR = path.join(__dirname, 'accounts');
 
-// Default Configs
+// Auto-create config.json if not exists
 const configPath = './config.json';
-const stylePath = './style.json';
-
 if (!fs.existsSync(configPath)) {
-    fs.writeJsonSync(configPath, { prefix: "#", adminUID: [], botCreatorUID: "" }, { spaces: 2 });
-}
-if (!fs.existsSync(stylePath)) {
-    fs.writeJsonSync(stylePath, { top: '━━━━━━━━━━━━━━━━━━', bottom: '━━━━━━━━⊱⋆⊰━━━━━━━━' }, { spaces: 2 });
+    const defaultConfig = { prefix: "!", adminUID: [], botCreatorUID: "" };
+    fs.writeJsonSync(configPath, defaultConfig, { spaces: 2 });
+    console.log(`[SYSTEM] Created default config.json`);
 }
 
+// Auto-create style.json if not exists
+const stylePath = './style.json';
+if (!fs.existsSync(stylePath)) {
+    const defaultStyle = { top: '━━━━━━━━━━━━━━━━━━', bottom: '━━━━━━━━⊱⋆⊰━━━━━━━━' };
+    fs.writeJsonSync(stylePath, defaultStyle, { spaces: 2 });
+    console.log(`[SYSTEM] Created default style.json`);
+}
+
+// Load configurations after checking/creating
 let config = fs.readJsonSync(configPath);
 let style = fs.readJsonSync(stylePath);
 
@@ -45,7 +53,9 @@ let style = fs.readJsonSync(stylePath);
 // --------------------
 app.get('/stats', (req, res) => {
     const cmdDir = path.join(__dirname, 'cmds');
-    const commandCount = fs.readdirSync(cmdDir).filter(f => f.endsWith('.js')).length;
+    const commandCount = fs.existsSync(cmdDir)
+        ? fs.readdirSync(cmdDir).filter(f => f.endsWith('.js')).length
+        : 0;
 
     res.json({
         activeBots: apiInstances.size,
@@ -54,10 +64,10 @@ app.get('/stats', (req, res) => {
 });
 
 // --------------------
-// Login endpoint
+// Login endpoint (Adds new cookie)
 // --------------------
 app.post('/login', async (req, res) => {
-    const { appState } = req.body;
+    const { appState, prefix } = req.body;
 
     try {
         const cookies = JSON.parse(appState);
@@ -66,9 +76,10 @@ app.post('/login', async (req, res) => {
 
             const botID = api.getCurrentUserID();
             
-            // Auto-save cookie sa accounts folder
+            // I-save ang cookie gamit ang botID para unique
             fs.writeJsonSync(path.join(ACCOUNTS_DIR, `${botID}.json`), cookies, { spaces: 2 });
             
+            // Simulan ang bot at i-store sa Map
             apiInstances.set(botID, api);
             api.setOptions({ listenEvents: true, selfListen: false });
             startBot(api);
@@ -89,10 +100,6 @@ function startBot(api) {
     api.listenMqtt(async (err, event) => {
         if (err) return;
 
-        // Reload config/style para realtime updates kung binago ang file
-        config = fs.readJsonSync(configPath);
-        style = fs.readJsonSync(stylePath);
-
         if (event.type === "message") {
             const message = event.body || "";
             if (!message.startsWith(config.prefix)) return;
@@ -110,24 +117,17 @@ function startBot(api) {
             }
         }
 
-        // Run events for each bot instance
+        // Run external events (Welcome, Intro, etc.)
         for (const mod of eventsModules) {
-            try {
-                if (typeof mod === 'function') mod(api, event, config, style);
-            } catch (e) { /* ignore event errors */ }
+            try { if (typeof mod === 'function') mod(api, event, config, style); } catch (e) {}
         }
     });
 }
 
 function loadEvents() {
     const eventsDir = path.join(__dirname, 'events');
-    return fs.readdirSync(eventsDir)
-        .filter(f => f.endsWith('.js'))
-        .map(f => {
-            const modPath = path.join(eventsDir, f);
-            delete require.cache[require.resolve(modPath)];
-            return require(modPath);
-        });
+    if (!fs.existsSync(eventsDir)) return [];
+    return fs.readdirSync(eventsDir).filter(f => f.endsWith('.js')).map(f => require(path.join(eventsDir, f)));
 }
 
 function executeCommand(cmd, api, event, args) {
@@ -141,7 +141,7 @@ function executeCommand(cmd, api, event, args) {
 
     if (timestamps.has(userId)) {
         const expiration = timestamps.get(userId) + cooldownTime;
-        if (now < expiration) return; 
+        if (now < expiration) return; // Silent cooldown
     }
 
     timestamps.set(userId, now);
@@ -150,26 +150,32 @@ function executeCommand(cmd, api, event, args) {
 }
 
 // --------------------
-// Auto-load accounts
+// Auto-load existing accounts on restart
 // --------------------
 function loadSavedAccounts() {
+    if (!fs.existsSync(ACCOUNTS_DIR)) return;
+    
+    // Basahin lang ang .json files para iwas error sa .js
     const files = fs.readdirSync(ACCOUNTS_DIR).filter(f => f.endsWith('.json'));
     
-    if (files.length === 0) console.log("[SYSTEM] No saved accounts found.");
-
     files.forEach(file => {
-        const cookies = fs.readJsonSync(path.join(ACCOUNTS_DIR, file));
-        login({ appState: cookies }, (err, api) => {
-            if (err) {
-                console.log(`[ERROR] Account ${file} is invalid. Check your cookies.`);
-                return;
-            }
-            const botID = api.getCurrentUserID();
-            apiInstances.set(botID, api);
-            api.setOptions({ listenEvents: true, selfListen: false });
-            startBot(api);
-            console.log(`[ONLINE] Bot ID: ${botID} is active.`);
-        });
+        const cookiePath = path.join(ACCOUNTS_DIR, file);
+        try {
+            const cookies = fs.readJsonSync(cookiePath);
+            login({ appState: cookies }, (err, api) => {
+                if (err) {
+                    console.log(`[ERROR] Failed to login: ${file}`);
+                    return;
+                }
+                const botID = api.getCurrentUserID();
+                apiInstances.set(botID, api);
+                api.setOptions({ listenEvents: true, selfListen: false });
+                startBot(api);
+                console.log(`[SUCCESS] Bot ${botID} is active.`);
+            });
+        } catch (e) {
+            console.log(`[ERROR] Malformed cookie file: ${file}`);
+        }
     });
 }
 
@@ -177,5 +183,5 @@ app.listen(PORT, () => {
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     console.log(`🚀 Doughnut Bot Dashboard: http://localhost:${PORT}`);
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    loadSavedAccounts();
+    loadSavedAccounts(); // Tawagin ito para mag-online lahat ng saved bots
 });
