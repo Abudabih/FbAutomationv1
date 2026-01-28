@@ -10,17 +10,12 @@ const PORT = 3000;
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
 
-// Dito itatago ang lahat ng aktibong bot sessions
 const activeSessions = {}; 
 const cooldowns = new Map();
 
-// Siguraduhing may folder para sa multiple cookies
 const COOKIE_DIR = path.join(__dirname, 'account_cookies');
 if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
 
-// --------------------
-// Load config.json
-// --------------------
 let config = { prefix: "!", adminUID: [], botCreatorUID: "" };
 if (fs.existsSync('./config.json')) {
     config = fs.readJsonSync('./config.json');
@@ -34,7 +29,7 @@ if (fs.existsSync('./style.json')) {
 }
 
 // --------------------
-// Stats endpoint (For Frontend)
+// Stats endpoint
 // --------------------
 app.get('/stats', (req, res) => {
     const cmdDir = path.join(__dirname, 'cmds');
@@ -43,13 +38,13 @@ app.get('/stats', (req, res) => {
         : 0;
 
     res.json({
-        activeUsers: Object.keys(activeSessions).length, // Binibilang ang active accounts
+        activeUsers: Object.keys(activeSessions).length,
         totalCommands: commandCount
     });
 });
 
 // --------------------
-// Login endpoint (Handles Multi-Account)
+// Login endpoint with Duplicate Check
 // --------------------
 app.post('/login', async (req, res) => {
     const { appState, prefix, adminID } = req.body;
@@ -66,21 +61,32 @@ app.post('/login', async (req, res) => {
             }
 
             const userID = api.getCurrentUserID();
-            
-            // 1. I-save ang cookie para sa account na ito (auto-create per UID)
+
+            // --- DUPLICATE CHECK START ---
+            if (activeSessions[userID]) {
+                console.log(`[WARNING] Session for ${userID} is already active!`);
+                
+                // Opsyonal: I-logout ang bagong api instance para tipid sa memory
+                api.logout(); 
+
+                return res.status(400).json({
+                    success: false,
+                    message: "Session is already active!"
+                });
+            }
+            // --- DUPLICATE CHECK END ---
+
             const cookiePath = path.join(COOKIE_DIR, `${userID}.json`);
             fs.writeJsonSync(cookiePath, cookies, { spaces: 2 });
 
-            // 2. I-setup ang session details
             api.setOptions({ listenEvents: true, selfListen: false, online: true });
             
             activeSessions[userID] = {
                 api: api,
                 prefix: prefix || config.prefix,
-                adminID: adminID || []
+                adminID: adminID ? adminID.split(',').map(id => id.trim()) : []
             };
 
-            // Kunin ang pangalan ng bot (Optional, but good for logs)
             api.getUserInfo(userID, (err, ret) => {
                 const name = err ? "Bot" : ret[userID].name;
                 res.json({
@@ -109,15 +115,15 @@ function loadEvents() {
         .map(f => require(path.join(eventsDir, f)));
 }
 
-// --------------------
-// Bot starter (Scoped per Account)
-// --------------------
 function startBot(api, userID) {
     const eventsModules = loadEvents();
 
     api.listenMqtt(async (err, event) => {
         if (err) {
-            if (err.error === 'Not logged in.') delete activeSessions[userID];
+            console.error(`[ERROR - ${userID}]`, err);
+            if (err.error === 'Not logged in.' || err.error === 'Connection closed.') {
+                delete activeSessions[userID];
+            }
             return;
         }
 
@@ -142,16 +148,13 @@ function startBot(api, userID) {
                 } catch (e) {
                     console.error(e);
                 }
-            } else {
-                api.sendMessage(`Command "${commandName}" not found!`, event.threadID);
             }
         }
 
-        // Run events
         for (const mod of eventsModules) {
             try {
                 if (typeof mod === 'function') mod(api, event, config, style);
-            } catch (e) { console.error('[EVENT ERROR]', e); }
+            } catch (e) { /* silent error for events */ }
         }
     });
 }
