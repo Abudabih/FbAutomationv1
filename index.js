@@ -73,8 +73,10 @@ app.post('/login', async (req, res) => {
             apiInstance = api;
             api.setOptions({ listenEvents: true, selfListen: false });
 
-            const uid = api.getCurrentUserID();
-            res.json({ success: true, id: uid });
+            res.json({
+                success: true,
+                id: api.getCurrentUserID()
+            });
 
             startBot(api);
         });
@@ -108,36 +110,25 @@ function startBot(api) {
         if (err) return;
 
         // --------------------
-        // BOT JOIN EVENT
+        // BOT JOIN EVENT (GINAYA ANG welcome.js STYLE)
         // --------------------
         if (event.type === "event" && event.logMessageType === "log:subscribe") {
             const botID = api.getCurrentUserID();
-            const { addedParticipants } = event.logMessageData;
+            const addedParticipants = event.logMessageData.addedParticipants;
 
-            const botAdded = addedParticipants.some(p => p.userFbId === botID);
-            if (!botAdded) return;
+            for (const participant of addedParticipants) {
+                if (participant.userFbId === botID) {
+                    const welcomeMsg =
+                        `𝗗𝗢𝗨𝗚𝗛𝗡𝗨𝗧-𝗕𝗢𝗧\n` +
+                        `${style.top}\n` +
+                        `✨ 𝗔𝗱𝗱𝗲𝗱 𝘁𝗼 𝗮 𝗡𝗲𝘄 𝗚𝗿𝗼𝘂𝗽 𝗖𝗵𝗮𝘁! ✨\n\n` +
+                        `Hello everyone! I'm 𝗗𝗼𝘂𝗴𝗵𝗻𝘂𝘁 𝗕𝗼𝘁, your automation assistant! 🍩🤖\n\n` +
+                        `Type ❪ **${config.prefix}help** ❫ to see my commands.\n\n` +
+                        `${style.bottom}`;
 
-            let adderName = "Someone";
-
-            try {
-                const threadInfo = await api.getThreadInfo(event.threadID);
-                const adderInfo = threadInfo.userInfo?.[event.author];
-                if (adderInfo?.name) adderName = adderInfo.name;
-            } catch (e) {}
-
-            const welcomeMsg =
-                `𝗗𝗢𝗨𝗚𝗛𝗡𝗨𝗧-𝗕𝗢𝗧\n` +
-                `${style.top}\n` +
-                `✨ 𝗔𝗱𝗱𝗲𝗱 𝘁𝗼 𝗮 𝗡𝗲𝘄 𝗚𝗿𝗼𝘂𝗽 𝗖𝗵𝗮𝘁! ✨\n\n` +
-                `Hello everyone! I'm 𝗗𝗼𝘂𝗴𝗵𝗻𝘂𝘁 𝗕𝗼𝘁, your automation assistant! 🍩🤖\n\n` +
-                `Type ❪ **${config.prefix}help** ❫ to see my commands.\n\n` +
-                `${style.top}\n` +
-                `👤 𝗔𝗱𝗱𝗲𝗱 𝗯𝘆: ${adderName}\n` +
-                `👑 𝗢𝘄𝗻𝗲𝗿: 𝗗𝗼𝘂𝗴𝗵𝗻𝘂𝘁\n` +
-                `🚀 𝗦𝘁𝗮𝘁𝘂𝘀: Active!\n` +
-                `${style.bottom}`;
-
-            api.sendMessage(welcomeMsg, event.threadID);
+                    api.sendMessage(welcomeMsg, event.threadID);
+                }
+            }
         }
 
         // --------------------
@@ -164,35 +155,6 @@ function startBot(api) {
                 const cmd = require(cmdPath);
                 if (typeof cmd.execute !== 'function') return;
 
-                const senderID = event.senderID;
-                const isCreator = senderID === config.botCreatorUID;
-                const isBotAdmin = Array.isArray(config.adminUID)
-                    ? config.adminUID.includes(senderID)
-                    : senderID === config.adminUID;
-
-                if (cmd.role === 1 && !isCreator) {
-                    return api.sendMessage(
-                        "❌ This command is for the bot creator only.",
-                        event.threadID,
-                        event.messageID
-                    );
-                }
-
-                if (cmd.role === 2) {
-                    return api.getThreadInfo(event.threadID, (err, info) => {
-                        if (err) return;
-                        const isGCAdmin = info.adminIDs.some(a => a.id === senderID);
-                        if (!isGCAdmin && !isCreator && !isBotAdmin) {
-                            return api.sendMessage(
-                                "❌ This command is for admins only.",
-                                event.threadID,
-                                event.messageID
-                            );
-                        }
-                        executeCommand(cmd, api, event, args);
-                    });
-                }
-
                 executeCommand(cmd, api, event, args);
             } catch (e) {
                 console.error(e);
@@ -207,7 +169,7 @@ function startBot(api) {
                 if (typeof mod === 'function') {
                     mod(api, event, config, style);
                 }
-            } catch (e) {}
+            } catch {}
         }
     });
 }
@@ -241,17 +203,7 @@ function executeCommand(cmd, api, event, args) {
     timestamps.set(userId, now);
     setTimeout(() => timestamps.delete(userId), cooldownTime);
 
-    if (cmd.styleOutput) {
-        const styled =
-            `**${cmd.styleOutput.title}**\n` +
-            `${style.top}\n` +
-            `${cmd.styleOutput.content}\n` +
-            `${style.bottom}`;
-
-        api.sendMessage(styled, event.threadID, event.messageID);
-    } else {
-        cmd.execute(api, event, args);
-    }
+    cmd.execute(api, event, args);
 }
 
 app.listen(PORT, () => {
