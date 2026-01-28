@@ -10,11 +10,12 @@ const PORT = 3000;
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
 
-let apiInstance = null;
+// Dito itatago ang lahat ng aktibong login sessions
+const activeSessions = {}; 
 const cooldowns = new Map();
 
 // --------------------
-// Load config.json
+// Configurations
 // --------------------
 let config = { prefix: "!", adminUID: [], botCreatorUID: "" };
 if (fs.existsSync('./config.json')) {
@@ -23,19 +24,13 @@ if (fs.existsSync('./config.json')) {
     fs.writeJsonSync('./config.json', config, { spaces: 2 });
 }
 
-// --------------------
-// Load style.json
-// --------------------
-let style = {
-    top: '━━━━━━━━━━━━━━━━━━',
-    bottom: '━━━━━━━━⊱⋆⊰━━━━━━━━'
-};
+let style = { top: '━━━━━━━━━━━━━━━━━━', bottom: '━━━━━━━━⊱⋆⊰━━━━━━━━' };
 if (fs.existsSync('./style.json')) {
     style = fs.readJsonSync('./style.json');
 }
 
 // --------------------
-// Stats endpoint
+// Multi-Account Stats
 // --------------------
 app.get('/stats', (req, res) => {
     const cmdDir = path.join(__dirname, 'cmds');
@@ -44,24 +39,21 @@ app.get('/stats', (req, res) => {
         : 0;
 
     res.json({
-        activeUsers: apiInstance ? 1 : 0,
+        activeAccounts: Object.keys(activeSessions).length,
+        accountIDs: Object.keys(activeSessions),
         totalCommands: commandCount
     });
 });
 
 // --------------------
-// Login endpoint
+// Login Endpoint (Handles Multiple)
 // --------------------
 app.post('/login', async (req, res) => {
     const { appState, prefix } = req.body;
 
     try {
-        const cookies = JSON.parse(appState);
-        config.prefix = prefix || config.prefix;
-
-        fs.writeJsonSync('./config.json', config, { spaces: 2 });
-        fs.writeJsonSync('./cookie.json', cookies, { spaces: 2 });
-
+        const cookies = typeof appState === 'string' ? JSON.parse(appState) : appState;
+        
         login({ appState: cookies }, (err, api) => {
             if (err) {
                 return res.status(401).json({
@@ -70,101 +62,89 @@ app.post('/login', async (req, res) => {
                 });
             }
 
-            apiInstance = api;
-            api.setOptions({ listenEvents: true, selfListen: false });
+            const userID = api.getCurrentUserID();
+            
+            // I-set ang options para sa account na ito
+            api.setOptions({ listenEvents: true, selfListen: false, online: true });
+
+            // I-store sa global object para hindi ma-overwrite ang ibang account
+            activeSessions[userID] = {
+                api: api,
+                prefix: prefix || config.prefix
+            };
 
             res.json({
                 success: true,
-                id: api.getCurrentUserID()
+                id: userID,
+                message: `Account ${userID} is now active.`
             });
 
-            startBot(api);
+            console.log(`[SYSTEM] Account logged in: ${userID}`);
+            startBot(api, userID);
         });
     } catch (e) {
-        res.status(500).json({
-            success: false,
-            message: "Invalid JSON Cookies"
-        });
+        res.status(500).json({ success: false, message: "Invalid JSON Cookies" });
     }
 });
 
 // --------------------
-// Event loader
+// Event & Bot Logic
 // --------------------
 function loadEvents() {
     const eventsDir = path.join(__dirname, 'events');
     if (!fs.existsSync(eventsDir)) return [];
-
     return fs.readdirSync(eventsDir)
         .filter(f => f.endsWith('.js'))
         .map(f => require(path.join(eventsDir, f)));
 }
 
-// --------------------
-// Bot starter
-// --------------------
-function startBot(api) {
+function startBot(api, userID) {
     const eventsModules = loadEvents();
 
     api.listenMqtt(async (err, event) => {
-        if (err) return;
+        if (err) {
+            if (err.error === 'Not logged in.') delete activeSessions[userID];
+            return;
+        }
 
-        // --------------------
-        // COMMAND HANDLER
-        // --------------------
+        // Kunin ang specific prefix para sa account na ito
+        const accountPrefix = activeSessions[userID]?.prefix || config.prefix;
+
         if (event.type === "message") {
             const message = event.body || "";
-            if (!message.startsWith(config.prefix)) return;
+            if (!message.startsWith(accountPrefix)) return;
 
-            const args = message.slice(config.prefix.length).trim().split(/ +/);
+            const args = message.slice(accountPrefix.length).trim().split(/ +/);
             const commandName = args.shift().toLowerCase();
             const cmdPath = path.join(__dirname, 'cmds', `${commandName}.js`);
 
-            if (!fs.existsSync(cmdPath)) {
-                return api.sendMessage(
-                    `Command "${commandName}" not found!\nUse ${config.prefix}help to see all commands.`,
-                    event.threadID,
-                    event.messageID
-                );
-            }
-
-            try {
-                delete require.cache[require.resolve(cmdPath)];
-                const cmd = require(cmdPath);
-                if (typeof cmd.execute !== 'function') return;
-
-                executeCommand(cmd, api, event, args);
-            } catch (e) {
-                console.error(e);
+            if (fs.existsSync(cmdPath)) {
+                try {
+                    delete require.cache[require.resolve(cmdPath)];
+                    const cmd = require(cmdPath);
+                    executeCommand(cmd, api, event, args);
+                } catch (e) {
+                    console.error(e);
+                }
             }
         }
 
-        // --------------------
-        // External event modules (INTRODUCTION, WELCOME, ETC.)
-        // --------------------
+        // Run external events
         for (const mod of eventsModules) {
             try {
-                if (typeof mod === 'function') {
-                    mod(api, event, config, style);
-                }
+                if (typeof mod === 'function') mod(api, event, config, style);
             } catch (e) {
-                console.error('[EVENT ERROR]', e);
+                console.error(`[EVENT ERROR - ${userID}]`, e);
             }
         }
     });
 }
 
-// --------------------
-// Cooldown executor
-// --------------------
 function executeCommand(cmd, api, event, args) {
     const userId = event.senderID;
     const cooldownTime = (cmd.cooldown || 0) * 1000;
 
-    if (!cooldowns.has(cmd.name)) {
-        cooldowns.set(cmd.name, new Map());
-    }
-
+    if (!cooldowns.has(cmd.name)) cooldowns.set(cmd.name, new Map());
     const timestamps = cooldowns.get(cmd.name);
     const now = Date.now();
 
@@ -172,20 +152,17 @@ function executeCommand(cmd, api, event, args) {
         const expiration = timestamps.get(userId) + cooldownTime;
         if (now < expiration) {
             const timeLeft = Math.ceil((expiration - now) / 1000);
-            return api.sendMessage(
-                `⏱️ Please wait ${timeLeft}s to use "${cmd.name}" again.`,
-                event.threadID,
-                event.messageID
-            );
+            return api.sendMessage(`⏱️ Cooldown: ${timeLeft}s`, event.threadID, event.messageID);
         }
     }
 
     timestamps.set(userId, now);
     setTimeout(() => timestamps.delete(userId), cooldownTime);
 
-    cmd.execute(api, event, args);
+    // Siguraduhing may execute function ang command
+    if (cmd.execute) cmd.execute(api, event, args, activeSessions); 
 }
 
 app.listen(PORT, () => {
-    console.log(`Dashboard active at http://localhost:${PORT}`);
+    console.log(`Multi-Account Dashboard active at http://localhost:${PORT}`);
 });
