@@ -1,0 +1,7 @@
+[2026-01-28T18:05:10.919Z] [INFO] [SYSTEM] Configuration loaded successfully
+[2026-01-28T18:05:10.938Z] [INFO] [SYSTEM] Style configuration loaded
+[2026-01-28T18:05:10.976Z] [SUCCESS] [SYSTEM] Website started on http://localhost:3000
+[2026-01-28T18:05:10.977Z] [INFO] [SYSTEM] System initialized - Ready for multi-account operation
+[2026-01-28T18:05:11.982Z] [INFO] [SYSTEM] Starting automatic account loading...
+[2026-01-28T18:05:11.983Z] [WARN] [SYSTEM] No cookie files found in cookies directory
+[2026-01-28T18:05:59.680Z] [INFO] [SYSTEM] Shutting down gracefully...
