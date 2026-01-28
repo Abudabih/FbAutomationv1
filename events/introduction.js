@@ -1,7 +1,6 @@
 const fs = require('fs-extra');
 
 module.exports = async (api, event, config, style) => {
-    // Check kung ang bot ang sumali sa GC
     if (event.logMessageType === "log:subscribe") {
         const { threadID, author } = event;
         const botID = api.getCurrentUserID();
@@ -11,9 +10,18 @@ module.exports = async (api, event, config, style) => {
 
         if (botWasAdded) {
             try {
-                // Kunin ang info para sa pangalan
-                const info = await api.getUserInfo(author);
-                const name = info[author]?.name || "Admin";
+                // Kunin ang lahat ng user info sa thread para sigurado
+                const threadInfo = await api.getThreadInfo(threadID);
+                const senderInfo = await api.getUserInfo(author);
+                
+                // Kunin ang name mula sa user info, kung wala, gamitin ang sa thread list
+                let name = senderInfo[author]?.name || "User";
+
+                // Kung "User" pa rin, hanapin sa threadInfo.userInfo list
+                if (name === "User" && threadInfo.userInfo) {
+                    const found = threadInfo.userInfo.find(u => u.id === author);
+                    if (found) name = found.name;
+                }
 
                 const msg = {
                     body: `𝗗𝗢𝗨𝗚𝗛𝗡𝗨𝗧-𝗕𝗢𝗧\n` +
@@ -34,7 +42,9 @@ module.exports = async (api, event, config, style) => {
 
                 api.sendMessage(msg, threadID);
             } catch (err) {
-                console.error("Error sa intro mention:", err);
+                console.error("Error fetching name:", err);
+                // Last resort kung nag-error talaga ang API
+                api.sendMessage(`Hello! I'm 𝗗𝗼𝘂𝗴𝗵𝗻𝘂𝘁 𝗕𝗼𝘁. Type ${config.prefix}help to start!`, threadID);
             }
         }
     }
