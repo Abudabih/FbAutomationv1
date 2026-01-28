@@ -10,41 +10,45 @@ const PORT = 3000;
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
 
-let apiInstance = null;
+const apiInstances = new Map(); 
 const cooldowns = new Map();
 
 // --------------------
-// Load config.json
+// DIRECTORY & FILE INITIALIZER
 // --------------------
-let config = { prefix: "!", adminUID: [], botCreatorUID: "" };
-if (fs.existsSync('./config.json')) {
-    config = fs.readJsonSync('./config.json');
-} else {
-    fs.writeJsonSync('./config.json', config, { spaces: 2 });
+const requiredDirs = ['accounts', 'cmds', 'events'];
+requiredDirs.forEach(dir => {
+    if (!fs.existsSync(path.join(__dirname, dir))) {
+        fs.mkdirSync(path.join(__dirname, dir));
+        console.log(`[SYSTEM] Created directory: /${dir}`);
+    }
+});
+
+const ACCOUNTS_DIR = path.join(__dirname, 'accounts');
+
+// Default Configs
+const configPath = './config.json';
+const stylePath = './style.json';
+
+if (!fs.existsSync(configPath)) {
+    fs.writeJsonSync(configPath, { prefix: "#", adminUID: [], botCreatorUID: "" }, { spaces: 2 });
+}
+if (!fs.existsSync(stylePath)) {
+    fs.writeJsonSync(stylePath, { top: '━━━━━━━━━━━━━━━━━━', bottom: '━━━━━━━━⊱⋆⊰━━━━━━━━' }, { spaces: 2 });
 }
 
-// --------------------
-// Load style.json
-// --------------------
-let style = {
-    top: '━━━━━━━━━━━━━━━━━━',
-    bottom: '━━━━━━━━⊱⋆⊰━━━━━━━━'
-};
-if (fs.existsSync('./style.json')) {
-    style = fs.readJsonSync('./style.json');
-}
+let config = fs.readJsonSync(configPath);
+let style = fs.readJsonSync(stylePath);
 
 // --------------------
 // Stats endpoint
 // --------------------
 app.get('/stats', (req, res) => {
     const cmdDir = path.join(__dirname, 'cmds');
-    const commandCount = fs.existsSync(cmdDir)
-        ? fs.readdirSync(cmdDir).filter(f => f.endsWith('.js')).length
-        : 0;
+    const commandCount = fs.readdirSync(cmdDir).filter(f => f.endsWith('.js')).length;
 
     res.json({
-        activeUsers: apiInstance ? 1 : 0,
+        activeBots: apiInstances.size,
         totalCommands: commandCount
     });
 });
@@ -53,55 +57,31 @@ app.get('/stats', (req, res) => {
 // Login endpoint
 // --------------------
 app.post('/login', async (req, res) => {
-    const { appState, prefix } = req.body;
+    const { appState } = req.body;
 
     try {
         const cookies = JSON.parse(appState);
-        config.prefix = prefix || config.prefix;
-
-        fs.writeJsonSync('./config.json', config, { spaces: 2 });
-        fs.writeJsonSync('./cookie.json', cookies, { spaces: 2 });
-
         login({ appState: cookies }, (err, api) => {
-            if (err) {
-                return res.status(401).json({
-                    success: false,
-                    message: err.error || "Login failed"
-                });
-            }
+            if (err) return res.status(401).json({ success: false, message: "Login failed" });
 
-            apiInstance = api;
+            const botID = api.getCurrentUserID();
+            
+            // Auto-save cookie sa accounts folder
+            fs.writeJsonSync(path.join(ACCOUNTS_DIR, `${botID}.json`), cookies, { spaces: 2 });
+            
+            apiInstances.set(botID, api);
             api.setOptions({ listenEvents: true, selfListen: false });
-
-            res.json({
-                success: true,
-                id: api.getCurrentUserID()
-            });
-
             startBot(api);
+
+            res.json({ success: true, id: botID });
         });
     } catch (e) {
-        res.status(500).json({
-            success: false,
-            message: "Invalid JSON Cookies"
-        });
+        res.status(500).json({ success: false, message: "Invalid JSON Cookies" });
     }
 });
 
 // --------------------
-// Event loader
-// --------------------
-function loadEvents() {
-    const eventsDir = path.join(__dirname, 'events');
-    if (!fs.existsSync(eventsDir)) return [];
-
-    return fs.readdirSync(eventsDir)
-        .filter(f => f.endsWith('.js'))
-        .map(f => require(path.join(eventsDir, f)));
-}
-
-// --------------------
-// Bot starter
+// Bot starter logic
 // --------------------
 function startBot(api) {
     const eventsModules = loadEvents();
@@ -109,9 +89,10 @@ function startBot(api) {
     api.listenMqtt(async (err, event) => {
         if (err) return;
 
-        // --------------------
-        // COMMAND HANDLER
-        // --------------------
+        // Reload config/style para realtime updates kung binago ang file
+        config = fs.readJsonSync(configPath);
+        style = fs.readJsonSync(stylePath);
+
         if (event.type === "message") {
             const message = event.body || "";
             if (!message.startsWith(config.prefix)) return;
@@ -120,72 +101,81 @@ function startBot(api) {
             const commandName = args.shift().toLowerCase();
             const cmdPath = path.join(__dirname, 'cmds', `${commandName}.js`);
 
-            if (!fs.existsSync(cmdPath)) {
-                return api.sendMessage(
-                    `Command "${commandName}" not found!\nUse ${config.prefix}help to see all commands.`,
-                    event.threadID,
-                    event.messageID
-                );
-            }
-
-            try {
-                delete require.cache[require.resolve(cmdPath)];
-                const cmd = require(cmdPath);
-                if (typeof cmd.execute !== 'function') return;
-
-                executeCommand(cmd, api, event, args);
-            } catch (e) {
-                console.error(e);
+            if (fs.existsSync(cmdPath)) {
+                try {
+                    delete require.cache[require.resolve(cmdPath)];
+                    const cmd = require(cmdPath);
+                    executeCommand(cmd, api, event, args);
+                } catch (e) { console.error(e); }
             }
         }
 
-        // --------------------
-        // External event modules (INTRODUCTION, WELCOME, ETC.)
-        // --------------------
+        // Run events for each bot instance
         for (const mod of eventsModules) {
             try {
-                if (typeof mod === 'function') {
-                    mod(api, event, config, style);
-                }
-            } catch (e) {
-                console.error('[EVENT ERROR]', e);
-            }
+                if (typeof mod === 'function') mod(api, event, config, style);
+            } catch (e) { /* ignore event errors */ }
         }
     });
 }
 
-// --------------------
-// Cooldown executor
-// --------------------
+function loadEvents() {
+    const eventsDir = path.join(__dirname, 'events');
+    return fs.readdirSync(eventsDir)
+        .filter(f => f.endsWith('.js'))
+        .map(f => {
+            const modPath = path.join(eventsDir, f);
+            delete require.cache[require.resolve(modPath)];
+            return require(modPath);
+        });
+}
+
 function executeCommand(cmd, api, event, args) {
     const userId = event.senderID;
+    const cmdName = cmd.name || "unknown";
     const cooldownTime = (cmd.cooldown || 0) * 1000;
 
-    if (!cooldowns.has(cmd.name)) {
-        cooldowns.set(cmd.name, new Map());
-    }
-
-    const timestamps = cooldowns.get(cmd.name);
+    if (!cooldowns.has(cmdName)) cooldowns.set(cmdName, new Map());
+    const timestamps = cooldowns.get(cmdName);
     const now = Date.now();
 
     if (timestamps.has(userId)) {
         const expiration = timestamps.get(userId) + cooldownTime;
-        if (now < expiration) {
-            const timeLeft = Math.ceil((expiration - now) / 1000);
-            return api.sendMessage(
-                `⏱️ Please wait ${timeLeft}s to use "${cmd.name}" again.`,
-                event.threadID,
-                event.messageID
-            );
-        }
+        if (now < expiration) return; 
     }
 
     timestamps.set(userId, now);
     setTimeout(() => timestamps.delete(userId), cooldownTime);
-
     cmd.execute(api, event, args);
 }
 
+// --------------------
+// Auto-load accounts
+// --------------------
+function loadSavedAccounts() {
+    const files = fs.readdirSync(ACCOUNTS_DIR).filter(f => f.endsWith('.json'));
+    
+    if (files.length === 0) console.log("[SYSTEM] No saved accounts found.");
+
+    files.forEach(file => {
+        const cookies = fs.readJsonSync(path.join(ACCOUNTS_DIR, file));
+        login({ appState: cookies }, (err, api) => {
+            if (err) {
+                console.log(`[ERROR] Account ${file} is invalid. Check your cookies.`);
+                return;
+            }
+            const botID = api.getCurrentUserID();
+            apiInstances.set(botID, api);
+            api.setOptions({ listenEvents: true, selfListen: false });
+            startBot(api);
+            console.log(`[ONLINE] Bot ID: ${botID} is active.`);
+        });
+    });
+}
+
 app.listen(PORT, () => {
-    console.log(`Dashboard active at http://localhost:${PORT}`);
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`🚀 Doughnut Bot Dashboard: http://localhost:${PORT}`);
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    loadSavedAccounts();
 });
