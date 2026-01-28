@@ -119,19 +119,28 @@ function autoLoadAllAccounts() {
         return;
     }
 
-    logger.info(`Found ${cookieFiles.length} cookie file(s)`);
+    logger.info(`Found ${cookieFiles.length} cookie file(s): ${cookieFiles.join(', ')}`);
 
     cookieFiles.forEach((file, index) => {
         setTimeout(() => {
             const cookiePath = path.join(COOKIE_DIR, file);
+            logger.info(`[${index + 1}/${cookieFiles.length}] Attempting to load: ${file}`);
+            
             try {
                 const cookies = fs.readJsonSync(cookiePath);
+                
+                // Validate cookie structure
+                if (!Array.isArray(cookies) || cookies.length === 0) {
+                    throw new Error('Invalid cookie format - must be non-empty array');
+                }
+                
+                logger.info(`Cookie file ${file} parsed successfully (${cookies.length} entries)`);
                 loginAccount(cookies, file, true); // Pass true to indicate auto-load
             } catch (e) {
                 logger.error(`Failed to load ${file}: ${e.message}`);
                 deleteInvalidCookie(file, `Parse error: ${e.message}`);
             }
-        }, index * 3000); // Stagger logins by 3 seconds
+        }, index * 5000); // Increased to 5 seconds between logins
     });
 }
 
@@ -139,6 +148,8 @@ function autoLoadAllAccounts() {
 // Login function (reusable)
 // --------------------
 function loginAccount(cookies, source = 'API', isAutoLoad = false) {
+    logger.info(`Initiating login from source: ${source}`, null);
+    
     login({ appState: cookies }, (err, api) => {
         if (err) {
             const errorMsg = err.error || err.toString();
@@ -151,41 +162,51 @@ function loginAccount(cookies, source = 'API', isAutoLoad = false) {
             return;
         }
 
-        const userID = api.getCurrentUserID();
-        
-        // Check if account is already active
-        if (activeSessions[userID]) {
-            logger.warn(`Account ${userID} is already active`, userID);
-            return;
-        }
-
-        // Save cookies with userID as filename
-        const cookiePath = path.join(COOKIE_DIR, `${userID}.json`);
-        fs.writeJsonSync(cookiePath, cookies, { spaces: 2 });
-
-        api.setOptions({ 
-            listenEvents: true, 
-            selfListen: false, 
-            online: true 
-        });
-        
-        // Register session
-        activeSessions[userID] = {
-            api: api,
-            prefix: config.prefix,
-            adminID: config.adminUID,
-            startTime: Date.now(),
-            cookieFile: `${userID}.json`,
-            errorCount: 0
-        };
-
-        api.getUserInfo(userID, (err, ret) => {
-            const name = err ? "Unknown" : ret[userID].name;
-            logger.success(`Account started: ${name} (${userID})`, userID);
+        try {
+            const userID = api.getCurrentUserID();
+            logger.info(`Login successful, UserID: ${userID}`, userID);
             
-            // Start bot listener for this account
-            startBot(api, userID);
-        });
+            // Check if account is already active
+            if (activeSessions[userID]) {
+                logger.warn(`Account ${userID} is already active - skipping duplicate`, userID);
+                return;
+            }
+
+            // Save cookies with userID as filename (only save new format)
+            const cookiePath = path.join(COOKIE_DIR, `${userID}.json`);
+            if (!fs.existsSync(cookiePath)) {
+                fs.writeJsonSync(cookiePath, cookies, { spaces: 2 });
+                logger.info(`Cookies saved to ${userID}.json`, userID);
+            }
+
+            api.setOptions({ 
+                listenEvents: true, 
+                selfListen: false, 
+                online: true 
+            });
+            
+            // Register session
+            activeSessions[userID] = {
+                api: api,
+                prefix: config.prefix,
+                adminID: config.adminUID,
+                startTime: Date.now(),
+                cookieFile: `${userID}.json`,
+                errorCount: 0
+            };
+            
+            logger.info(`Session registered for ${userID}`, userID);
+
+            api.getUserInfo(userID, (err, ret) => {
+                const name = err ? "Unknown" : ret[userID].name;
+                logger.success(`✓ Account fully started: ${name} (${userID})`, userID);
+                
+                // Start bot listener for this account
+                startBot(api, userID);
+            });
+        } catch (e) {
+            logger.error(`Error during login process: ${e.message}`);
+        }
     });
 }
 
@@ -214,6 +235,32 @@ app.get('/stats', (req, res) => {
         runningAccounts: accounts,
         timestamp: new Date().toISOString()
     });
+});
+
+// --------------------
+// Logs endpoint - Get recent system logs
+// --------------------
+app.get('/logs', (req, res) => {
+    try {
+        const logFile = logger.logFile;
+        
+        if (!fs.existsSync(logFile)) {
+            return res.json({ logs: [] });
+        }
+        
+        const logContent = fs.readFileSync(logFile, 'utf-8');
+        const logLines = logContent.split('\n').filter(line => line.trim());
+        
+        // Get last 50 logs
+        const recentLogs = logLines.slice(-50);
+        
+        res.json({ 
+            logs: recentLogs,
+            count: recentLogs.length 
+        });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to read logs' });
+    }
 });
 
 // --------------------
