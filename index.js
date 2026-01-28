@@ -5,126 +5,158 @@ const path = require('path');
 const { login } = require('ws3-fca');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
 
-// Dito itatago ang lahat ng aktibong bot sessions
+// Storage para sa active instances at cooldowns
 const activeSessions = {}; 
 const cooldowns = new Map();
-
 const COOKIE_DIR = path.join(__dirname, 'account_cookies');
-if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
 
+if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR, { recursive: true });
+
+// Global Configurations
 let config = { prefix: "!", adminUID: [], botCreatorUID: "" };
-if (fs.existsSync('./config.json')) {
-    config = fs.readJsonSync('./config.json');
-}
+if (fs.existsSync('./config.json')) config = fs.readJsonSync('./config.json');
 
 let style = { top: '━━━━━━━━━━━━━━━━━━', bottom: '━━━━━━━━⊱⋆⊰━━━━━━━━' };
-if (fs.existsSync('./style.json')) {
-    style = fs.readJsonSync('./style.json');
+if (fs.existsSync('./style.json')) style = fs.readJsonSync('./style.json');
+
+// --- Helper: Safe Message Sender (Anti-Crash) ---
+const safeSend = (api, msg, threadID, messageID = null) => {
+    try {
+        api.sendMessage(msg, threadID, (err) => {
+            if (err) console.error(`[SEND ERROR] ${threadID}:`, err.error || err);
+        }, messageID);
+    } catch (e) {
+        console.error("[CRITICAL SEND ERROR]", e.message);
+    }
+};
+
+// --- Helper: Unlimited Incremental Naming ---
+function getNewCookiePath() {
+    let fileName = 'cookie.json';
+    let filePath = path.join(COOKIE_DIR, fileName);
+    let count = 2;
+
+    while (fs.existsSync(filePath)) {
+        fileName = `cookie${count}.json`;
+        filePath = path.join(COOKIE_DIR, fileName);
+        count++;
+    }
+    return { filePath, fileName };
 }
 
 // --------------------
-// Stats endpoint
+// Core Bot Bootstrapper
 // --------------------
-app.get('/stats', (req, res) => {
-    const cmdDir = path.join(__dirname, 'cmds');
-    const commandCount = fs.existsSync(cmdDir)
-        ? fs.readdirSync(cmdDir).filter(f => f.endsWith('.js')).length
-        : 0;
-
-    res.json({
-        activeUsers: Object.keys(activeSessions).length,
-        totalCommands: commandCount,
-        runningAccounts: Object.keys(activeSessions) // List of active UIDs
-    });
-});
-
-// --------------------
-// Login endpoint (Multi-Account Support)
-// --------------------
-app.post('/login', async (req, res) => {
-    const { appState, prefix, adminID } = req.body;
-
-    try {
-        const cookies = typeof appState === 'string' ? JSON.parse(appState) : appState;
-
+async function bootBot(cookies, prefix, adminID, savedFile = null) {
+    return new Promise((resolve) => {
         login({ appState: cookies }, (err, api) => {
             if (err) {
-                return res.status(401).json({
-                    success: false,
-                    message: "Login failed: " + (err.error || "Check your cookies.")
-                });
+                console.error(`[LOGIN FAILED] ${savedFile || 'New Login'} - Error: ${err.error || err}`);
+                return resolve(null);
             }
 
             const userID = api.getCurrentUserID();
             
-            // Check kung running na ang account
+            // Iwasan ang duplicate sessions sa iisang UID
             if (activeSessions[userID]) {
-                return res.json({ success: true, id: userID, message: "Account is already active." });
+                console.log(`[SKIP] UID ${userID} is already active.`);
+                return resolve(userID);
             }
 
-            const cookiePath = path.join(COOKIE_DIR, `${userID}.json`);
-            fs.writeJsonSync(cookiePath, cookies, { spaces: 2 });
+            // Save file kung bagong login (Manual)
+            let currentFileName = savedFile;
+            if (!savedFile) {
+                const { filePath, fileName } = getNewCookiePath();
+                fs.writeJsonSync(filePath, cookies, { spaces: 2 });
+                currentFileName = fileName;
+            }
 
             api.setOptions({ listenEvents: true, selfListen: false, online: true });
             
-            // Register session
             activeSessions[userID] = {
-                api: api,
+                api,
                 prefix: prefix || config.prefix,
                 adminID: Array.isArray(adminID) ? adminID : [adminID]
             };
 
             api.getUserInfo(userID, (err, ret) => {
-                const name = err ? "Bot" : ret[userID].name;
-                res.json({
-                    success: true,
-                    id: userID,
-                    name: name
-                });
-                console.log(`[LOGIN] Account Started: ${name} (${userID})`);
+                const name = (ret && ret[userID]) ? ret[userID].name : "Facebook Bot";
+                console.log(`[SYSTEM] ${savedFile ? 'RELOADED' : 'NEW LOGIN'}: ${name} (${userID}) | File: ${currentFileName}`);
+                resolve(userID);
             });
 
-            // Simulan ang listener para sa account na ito
             startBot(api, userID);
         });
+    });
+}
+
+// --------------------
+// API Endpoints
+// --------------------
+app.post('/login', async (req, res) => {
+    const { appState, prefix, adminID } = req.body;
+    try {
+        const cookies = typeof appState === 'string' ? JSON.parse(appState) : appState;
+        const result = await bootBot(cookies, prefix, adminID);
+
+        if (result) {
+            res.json({ success: true, message: "Bot started and saved successfully!" });
+        } else {
+            res.status(401).json({ success: false, message: "Login failed. Check cookies." });
+        }
     } catch (e) {
-        res.status(500).json({ success: false, message: "Invalid Cookies Format" });
+        res.status(500).json({ success: false, message: "Invalid JSON Cookies format." });
     }
 });
 
-function loadEvents() {
-    const eventsDir = path.join(__dirname, 'events');
-    if (!fs.existsSync(eventsDir)) return [];
-    return fs.readdirSync(eventsDir)
-        .filter(f => f.endsWith('.js'))
-        .map(f => {
-            try {
-                return require(path.join(eventsDir, f));
-            } catch (e) {
-                console.error(`Failed to load event ${f}:`, e);
-                return null;
-            }
-        }).filter(ev => ev !== null);
+app.get('/stats', (req, res) => {
+    const cmdDir = path.join(__dirname, 'cmds');
+    const commandCount = fs.existsSync(cmdDir) ? fs.readdirSync(cmdDir).filter(f => f.endsWith('.js')).length : 0;
+    res.json({
+        activeBots: Object.keys(activeSessions).length,
+        totalCommands: commandCount,
+        instances: Object.keys(activeSessions)
+    });
+});
+
+// --------------------
+// Auto-Load on Startup
+// --------------------
+async function autoLoadSavedBots() {
+    console.log("[SYSTEM] Scanning for saved cookie files...");
+    const files = fs.readdirSync(COOKIE_DIR).filter(f => f.endsWith('.json'));
+    
+    for (const file of files) {
+        try {
+            const cookies = fs.readJsonSync(path.join(COOKIE_DIR, file));
+            // Delay para iwas checkpoint/spam detection ng FB
+            await new Promise(r => setTimeout(r, 2500));
+            await bootBot(cookies, config.prefix, config.adminUID, file);
+        } catch (e) {
+            console.error(`[SYSTEM] Failed to load ${file}:`, e.message);
+        }
+    }
 }
 
 // --------------------
 // Independent Bot Listener
 // --------------------
 function startBot(api, userID) {
-    const eventsModules = loadEvents();
+    const eventsDir = path.join(__dirname, 'events');
+    const eventsModules = fs.existsSync(eventsDir) 
+        ? fs.readdirSync(eventsDir).filter(f => f.endsWith('.js')).map(f => require(path.join(eventsDir, f))) 
+        : [];
 
-    // Mahalaga: listenMqtt ay per instance ng api
-    const listenEmitter = api.listenMqtt(async (err, event) => {
+    api.listenMqtt(async (err, event) => {
         if (err) {
-            console.error(`[ERROR - ${userID}]`, err);
-            if (err === 'Not logged in.' || err.error === 'Not logged in.') {
+            if (err.error === 'Not logged in.' || err === 'Not logged in.') {
+                console.log(`[OFFLINE] Account ${userID} session expired.`);
                 delete activeSessions[userID];
-                return listenEmitter.stopListening();
             }
             return;
         }
@@ -132,42 +164,32 @@ function startBot(api, userID) {
         const session = activeSessions[userID];
         if (!session) return;
 
-        const currentPrefix = session.prefix;
-
         if (event.type === "message") {
             const message = event.body || "";
-            if (!message.startsWith(currentPrefix)) return;
+            if (!message.startsWith(session.prefix)) return;
 
-            const args = message.slice(currentPrefix.length).trim().split(/ +/);
+            const args = message.slice(session.prefix.length).trim().split(/ +/);
             const commandName = args.shift().toLowerCase();
             const cmdPath = path.join(__dirname, 'cmds', `${commandName}.js`);
 
             if (fs.existsSync(cmdPath)) {
                 try {
-                    // Fresh require para sa bawat execute (optional, pero good for dev)
                     delete require.cache[require.resolve(cmdPath)];
                     const cmd = require(cmdPath);
-                    
-                    // Ipasa ang session info para alam ng command kung sino ang admin/prefix
                     executeCommand(cmd, api, event, args, session);
-                } catch (e) {
-                    console.error(`[CMD ERROR - ${commandName}]`, e);
-                }
+                } catch (e) { console.error(`[CMD ERROR]`, e); }
+            } else {
+                safeSend(api, `Command "${commandName}" not found!`, event.threadID, event.messageID);
             }
         }
 
-        // Run events for this specific account
-        for (const mod of eventsModules) {
+        // Run events safely
+        eventsModules.forEach(mod => {
             try {
-                if (typeof mod === 'function') {
-                    mod(api, event, config, style);
-                } else if (mod.onEvent) {
-                    mod.onEvent({ api, event, config, style });
-                }
-            } catch (e) { 
-                // Wag hayaang mag-crash ang ibang accounts pag may error sa isang event
-            }
-        }
+                if (typeof mod === 'function') mod(api, event, config, style);
+                else if (mod.onEvent) mod.onEvent({ api, event, config, style });
+            } catch (e) {}
+        });
     });
 }
 
@@ -182,32 +204,25 @@ function executeCommand(cmd, api, event, args, session) {
     if (timestamps.has(userId)) {
         const expiration = timestamps.get(userId) + cooldownTime;
         if (now < expiration) {
-            const timeLeft = Math.ceil((expiration - now) / 1000);
-            return api.sendMessage(`⏱️ Wait ${timeLeft}s.`, event.threadID, event.messageID);
+            return safeSend(api, `⏱️ Wait ${Math.ceil((expiration - now) / 1000)}s.`, event.threadID, event.messageID);
         }
     }
 
     timestamps.set(userId, now);
     setTimeout(() => timestamps.delete(userId), cooldownTime);
 
-    // I-inject ang session data para magamit ng commands (prefix, adminID)
-    const context = {
-        api,
-        event,
-        args,
-        prefix: session.prefix,
-        adminID: session.adminID,
-        style
-    };
-
-    if (cmd.execute) {
-        cmd.execute(api, event, args, context); // Support standard args
-    } else if (cmd.run) {
-        cmd.run(context); // Support object-based commands
+    try {
+        const context = { api, event, args, prefix: session.prefix, adminID: session.adminID, style };
+        if (cmd.execute) cmd.execute(api, event, args, context);
+        else if (cmd.run) cmd.run(context);
+    } catch (e) {
+        console.error(`[EXECUTION ERROR]`, e);
+        safeSend(api, "❌ May error sa pagtakbo ng command na ito.", event.threadID);
     }
 }
 
-app.listen(PORT, () => {
-    console.log(`[SERVER] Multi-Account Dashboard: http://localhost:${PORT}`);
-    console.log(`[INFO] Ready to host multiple bot instances.`);
+// Start Server
+app.listen(PORT, async () => {
+    console.log(`[SERVER] Dashboard live at: http://localhost:${PORT}`);
+    await autoLoadSavedBots();
 });
