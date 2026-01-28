@@ -10,12 +10,16 @@ const PORT = 3000;
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
 
-// Dito itatago ang lahat ng aktibong login sessions
+// Dito itatago ang lahat ng aktibong bot sessions
 const activeSessions = {}; 
 const cooldowns = new Map();
 
+// Siguraduhing may folder para sa multiple cookies
+const COOKIE_DIR = path.join(__dirname, 'account_cookies');
+if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
+
 // --------------------
-// Configurations
+// Load config.json
 // --------------------
 let config = { prefix: "!", adminUID: [], botCreatorUID: "" };
 if (fs.existsSync('./config.json')) {
@@ -30,7 +34,7 @@ if (fs.existsSync('./style.json')) {
 }
 
 // --------------------
-// Multi-Account Stats
+// Stats endpoint (For Frontend)
 // --------------------
 app.get('/stats', (req, res) => {
     const cmdDir = path.join(__dirname, 'cmds');
@@ -39,21 +43,20 @@ app.get('/stats', (req, res) => {
         : 0;
 
     res.json({
-        activeAccounts: Object.keys(activeSessions).length,
-        accountIDs: Object.keys(activeSessions),
+        activeUsers: Object.keys(activeSessions).length, // Binibilang ang active accounts
         totalCommands: commandCount
     });
 });
 
 // --------------------
-// Login Endpoint (Handles Multiple)
+// Login endpoint (Handles Multi-Account)
 // --------------------
 app.post('/login', async (req, res) => {
-    const { appState, prefix } = req.body;
+    const { appState, prefix, adminID } = req.body;
 
     try {
-        const cookies = typeof appState === 'string' ? JSON.parse(appState) : appState;
-        
+        const cookies = JSON.parse(appState);
+
         login({ appState: cookies }, (err, api) => {
             if (err) {
                 return res.status(401).json({
@@ -64,32 +67,40 @@ app.post('/login', async (req, res) => {
 
             const userID = api.getCurrentUserID();
             
-            // I-set ang options para sa account na ito
-            api.setOptions({ listenEvents: true, selfListen: false, online: true });
+            // 1. I-save ang cookie para sa account na ito (auto-create per UID)
+            const cookiePath = path.join(COOKIE_DIR, `${userID}.json`);
+            fs.writeJsonSync(cookiePath, cookies, { spaces: 2 });
 
-            // I-store sa global object para hindi ma-overwrite ang ibang account
+            // 2. I-setup ang session details
+            api.setOptions({ listenEvents: true, selfListen: false, online: true });
+            
             activeSessions[userID] = {
                 api: api,
-                prefix: prefix || config.prefix
+                prefix: prefix || config.prefix,
+                adminID: adminID || []
             };
 
-            res.json({
-                success: true,
-                id: userID,
-                message: `Account ${userID} is now active.`
+            // Kunin ang pangalan ng bot (Optional, but good for logs)
+            api.getUserInfo(userID, (err, ret) => {
+                const name = err ? "Bot" : ret[userID].name;
+                res.json({
+                    success: true,
+                    id: userID,
+                    name: name
+                });
+                console.log(`[SYSTEM] Account Active: ${name} (${userID})`);
             });
 
-            console.log(`[SYSTEM] Account logged in: ${userID}`);
             startBot(api, userID);
         });
     } catch (e) {
-        res.status(500).json({ success: false, message: "Invalid JSON Cookies" });
+        res.status(500).json({
+            success: false,
+            message: "Invalid JSON Cookies"
+        });
     }
 });
 
-// --------------------
-// Event & Bot Logic
-// --------------------
 function loadEvents() {
     const eventsDir = path.join(__dirname, 'events');
     if (!fs.existsSync(eventsDir)) return [];
@@ -98,6 +109,9 @@ function loadEvents() {
         .map(f => require(path.join(eventsDir, f)));
 }
 
+// --------------------
+// Bot starter (Scoped per Account)
+// --------------------
 function startBot(api, userID) {
     const eventsModules = loadEvents();
 
@@ -107,14 +121,16 @@ function startBot(api, userID) {
             return;
         }
 
-        // Kunin ang specific prefix para sa account na ito
-        const accountPrefix = activeSessions[userID]?.prefix || config.prefix;
+        const session = activeSessions[userID];
+        if (!session) return;
+
+        const currentPrefix = session.prefix;
 
         if (event.type === "message") {
             const message = event.body || "";
-            if (!message.startsWith(accountPrefix)) return;
+            if (!message.startsWith(currentPrefix)) return;
 
-            const args = message.slice(accountPrefix.length).trim().split(/ +/);
+            const args = message.slice(currentPrefix.length).trim().split(/ +/);
             const commandName = args.shift().toLowerCase();
             const cmdPath = path.join(__dirname, 'cmds', `${commandName}.js`);
 
@@ -126,16 +142,16 @@ function startBot(api, userID) {
                 } catch (e) {
                     console.error(e);
                 }
+            } else {
+                api.sendMessage(`Command "${commandName}" not found!`, event.threadID);
             }
         }
 
-        // Run external events
+        // Run events
         for (const mod of eventsModules) {
             try {
                 if (typeof mod === 'function') mod(api, event, config, style);
-            } catch (e) {
-                console.error(`[EVENT ERROR - ${userID}]`, e);
-            }
+            } catch (e) { console.error('[EVENT ERROR]', e); }
         }
     });
 }
@@ -152,15 +168,14 @@ function executeCommand(cmd, api, event, args) {
         const expiration = timestamps.get(userId) + cooldownTime;
         if (now < expiration) {
             const timeLeft = Math.ceil((expiration - now) / 1000);
-            return api.sendMessage(`⏱️ Cooldown: ${timeLeft}s`, event.threadID, event.messageID);
+            return api.sendMessage(`⏱️ Wait ${timeLeft}s.`, event.threadID, event.messageID);
         }
     }
 
     timestamps.set(userId, now);
     setTimeout(() => timestamps.delete(userId), cooldownTime);
 
-    // Siguraduhing may execute function ang command
-    if (cmd.execute) cmd.execute(api, event, args, activeSessions); 
+    if (cmd.execute) cmd.execute(api, event, args);
 }
 
 app.listen(PORT, () => {
