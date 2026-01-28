@@ -158,5 +158,3 @@ app.listen(PORT, () => {
     console.log(`Dashboard active at http://localhost:${PORT}`);
     loadSavedAccounts(); // Tawagin ito para mag-online lahat ng saved bots
 });
-
-update this fully
