@@ -110,28 +110,6 @@ function startBot(api) {
         if (err) return;
 
         // --------------------
-        // BOT JOIN EVENT (GINAYA ANG welcome.js STYLE)
-        // --------------------
-        if (event.type === "event" && event.logMessageType === "log:subscribe") {
-            const botID = api.getCurrentUserID();
-            const addedParticipants = event.logMessageData.addedParticipants;
-
-            for (const participant of addedParticipants) {
-                if (participant.userFbId === botID) {
-                    const welcomeMsg =
-                        `𝗗𝗢𝗨𝗚𝗛𝗡𝗨𝗧-𝗕𝗢𝗧\n` +
-                        `${style.top}\n` +
-                        `✨ 𝗔𝗱𝗱𝗲𝗱 𝘁𝗼 𝗮 𝗡𝗲𝘄 𝗚𝗿𝗼𝘂𝗽 𝗖𝗵𝗮𝘁! ✨\n\n` +
-                        `Hello everyone! I'm 𝗗𝗼𝘂𝗴𝗵𝗻𝘂𝘁 𝗕𝗼𝘁, your automation assistant! 🍩🤖\n\n` +
-                        `Type ❪ **${config.prefix}help** ❫ to see my commands.\n\n` +
-                        `${style.bottom}`;
-
-                    api.sendMessage(welcomeMsg, event.threadID);
-                }
-            }
-        }
-
-        // --------------------
         // COMMAND HANDLER
         // --------------------
         if (event.type === "message") {
@@ -162,14 +140,16 @@ function startBot(api) {
         }
 
         // --------------------
-        // External event modules
+        // External event modules (INTRODUCTION, WELCOME, ETC.)
         // --------------------
         for (const mod of eventsModules) {
             try {
                 if (typeof mod === 'function') {
                     mod(api, event, config, style);
                 }
-            } catch {}
+            } catch (e) {
+                console.error('[EVENT ERROR]', e);
+            }
         }
     });
 }
