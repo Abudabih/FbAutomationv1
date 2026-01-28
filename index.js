@@ -14,39 +14,18 @@ app.use(express.static(__dirname));
 const apiInstances = new Map(); 
 const cooldowns = new Map();
 
-// --------------------
-// AUTO-CREATE DIRECTORIES & FILES
-// --------------------
-const requiredDirs = ['accounts', 'cmds', 'events'];
-requiredDirs.forEach(dir => {
-    const dirPath = path.join(__dirname, dir);
-    if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath);
-        console.log(`[SYSTEM] Created directory: /${dir}`);
-    }
-});
-
+// Siguraduhin na may folder para sa accounts
 const ACCOUNTS_DIR = path.join(__dirname, 'accounts');
+if (!fs.existsSync(ACCOUNTS_DIR)) fs.mkdirSync(ACCOUNTS_DIR);
 
-// Auto-create config.json if not exists
-const configPath = './config.json';
-if (!fs.existsSync(configPath)) {
-    const defaultConfig = { prefix: "!", adminUID: [], botCreatorUID: "" };
-    fs.writeJsonSync(configPath, defaultConfig, { spaces: 2 });
-    console.log(`[SYSTEM] Created default config.json`);
-}
+// --------------------
+// Load config & style
+// --------------------
+let config = { prefix: "!", adminUID: [], botCreatorUID: "" };
+if (fs.existsSync('./config.json')) config = fs.readJsonSync('./config.json');
 
-// Auto-create style.json if not exists
-const stylePath = './style.json';
-if (!fs.existsSync(stylePath)) {
-    const defaultStyle = { top: '━━━━━━━━━━━━━━━━━━', bottom: '━━━━━━━━⊱⋆⊰━━━━━━━━' };
-    fs.writeJsonSync(stylePath, defaultStyle, { spaces: 2 });
-    console.log(`[SYSTEM] Created default style.json`);
-}
-
-// Load configurations after checking/creating
-let config = fs.readJsonSync(configPath);
-let style = fs.readJsonSync(stylePath);
+let style = { top: '━━━━━━━━━━━━━━━━━━', bottom: '━━━━━━━━⊱⋆⊰━━━━━━━━' };
+if (fs.existsSync('./style.json')) style = fs.readJsonSync('./style.json');
 
 // --------------------
 // Stats endpoint
@@ -141,7 +120,7 @@ function executeCommand(cmd, api, event, args) {
 
     if (timestamps.has(userId)) {
         const expiration = timestamps.get(userId) + cooldownTime;
-        if (now < expiration) return; // Silent cooldown
+        if (now < expiration) return; // Silent cooldown or add message here
     }
 
     timestamps.set(userId, now);
@@ -155,33 +134,29 @@ function executeCommand(cmd, api, event, args) {
 function loadSavedAccounts() {
     if (!fs.existsSync(ACCOUNTS_DIR)) return;
     
-    // Basahin lang ang .json files para iwas error sa .js
-    const files = fs.readdirSync(ACCOUNTS_DIR).filter(f => f.endsWith('.json'));
+    const files = fs.readdirSync(ACCOUNTS_DIR).filter(f => f.endsWith('.js') || f.endsWith('.json'));
     
     files.forEach(file => {
         const cookiePath = path.join(ACCOUNTS_DIR, file);
-        try {
-            const cookies = fs.readJsonSync(cookiePath);
-            login({ appState: cookies }, (err, api) => {
-                if (err) {
-                    console.log(`[ERROR] Failed to login: ${file}`);
-                    return;
-                }
-                const botID = api.getCurrentUserID();
-                apiInstances.set(botID, api);
-                api.setOptions({ listenEvents: true, selfListen: false });
-                startBot(api);
-                console.log(`[SUCCESS] Bot ${botID} is active.`);
-            });
-        } catch (e) {
-            console.log(`[ERROR] Malformed cookie file: ${file}`);
-        }
+        const cookies = fs.readJsonSync(cookiePath);
+        
+        login({ appState: cookies }, (err, api) => {
+            if (err) {
+                console.log(`[ERROR] Failed to login: ${file}`);
+                return;
+            }
+            const botID = api.getCurrentUserID();
+            apiInstances.set(botID, api);
+            api.setOptions({ listenEvents: true, selfListen: false });
+            startBot(api);
+            console.log(`[SUCCESS] Bot ${botID} is active.`);
+        });
     });
 }
 
 app.listen(PORT, () => {
-    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    console.log(`🚀 Doughnut Bot Dashboard: http://localhost:${PORT}`);
-    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`Dashboard active at http://localhost:${PORT}`);
     loadSavedAccounts(); // Tawagin ito para mag-online lahat ng saved bots
 });
+
+update this fully
