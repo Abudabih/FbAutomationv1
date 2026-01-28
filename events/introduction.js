@@ -1,43 +1,27 @@
-const getUserInfoFactory = require('../package/src/deltas/apis/users/getUserInfo');
-const utils = require('../package/src/utils');
-
 module.exports = async (api, event, config, style) => {
-    // Trigger only on BOT being added
-    if (event.type !== "event") return;
-    if (event.logMessageType !== "log:subscribe") return;
+    // Trigger lang kung BOT ang na-add
+    if (event.type !== "event" || event.logMessageType !== "log:subscribe") return;
 
     const botID = api.getCurrentUserID();
     const addedParticipants = event.logMessageData.addedParticipants || [];
 
+    // Check kung bot mismo ang na-add
     const isBotAdded = addedParticipants.some(p => p.userFbId === botID);
     if (!isBotAdded) return;
 
-    // --------------------
-    // INIT getUserInfo (same as ws3-fca internal)
-    // --------------------
-    const getUserInfo = getUserInfoFactory(
-        utils,
-        api,
-        { jar: api.jar }
-    );
-
+    // Kunin ang nag-add (author)
     let adderName = "Facebook User";
-
-    try {
-        const adderID = event.author; // 🔥 ID ng nag-add
-        if (adderID) {
-            const userInfo = await getUserInfo(adderID, true);
-            if (userInfo && userInfo.name) {
-                adderName = userInfo.name;
-            }
+    if (event.author) {
+        // Try gamitin fullName kung available sa participants
+        const adderObj = addedParticipants.find(p => p.userFbId === event.author);
+        if (adderObj && adderObj.fullName) {
+            adderName = adderObj.fullName;
+        } else {
+            // fallback sa event.author mismo
+            adderName = "Facebook User";
         }
-    } catch (err) {
-        console.error("Failed to fetch adder name:", err);
     }
 
-    // --------------------
-    // INTRO MESSAGE
-    // --------------------
     const introMsg =
         `𝗗𝗢𝗨𝗚𝗛𝗡𝗨𝗧-𝗕𝗢𝗧\n` +
         `${style.top}\n` +
