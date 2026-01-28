@@ -107,7 +107,7 @@ function startBot(api) {
             const botID = api.getCurrentUserID();
             if (event.logMessageData.addedParticipants.some(i => i.userFbId === botID)) {
                 const adderName = await fetchFbName(event.author);
-                const welcomeMsg = `**DOUGHNUT-BOT**\n${style.top}\n✨ 𝗔𝗱𝗱𝗲𝗱 𝘁𝗼 𝗮 𝗡𝗲𝘄 𝗚𝗿𝗼𝘂𝗽 𝗖𝗵𝗮𝘁! ✨\n\n` +
+                const welcomeMsg = `𝗗𝗢𝗨𝗚𝗛𝗡𝗨𝗧-𝗕𝗢𝗧\n${style.top}\n✨ 𝗔𝗱𝗱𝗲𝗱 𝘁𝗼 𝗮 𝗡𝗲𝘄 𝗚𝗿𝗼𝘂𝗽 𝗖𝗵𝗮𝘁! ✨\n\n` +
                     `Hello everyone! I'm 𝗗𝗼𝘂𝗴𝗵𝗻𝘂𝘁 𝗕𝗼𝘁, your automation assistant! 🍩🤖\n\n` +
                     `Type ❪ **${config.prefix}help** ❫ to see my commands.\n\n${style.top}\n` +
                     `👤 𝗔𝗱𝗱𝗲𝗱 𝗯𝘆: ${adderName}\n👑 𝗢𝘄𝗻𝗲𝗿: 𝗗𝗼𝘂𝗴𝗵𝗻𝘂𝘁\n🚀 𝗦𝘁𝗮𝘁𝘂𝘀: Active!\n${style.bottom}`;
