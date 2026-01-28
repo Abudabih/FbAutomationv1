@@ -2,8 +2,6 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs-extra');
 const path = require('path');
-const axios = require('axios');
-const cheerio = require('cheerio');
 const { login } = require('ws3-fca');
 
 const app = express();
@@ -37,41 +35,41 @@ if (fs.existsSync('./style.json')) {
 }
 
 // --------------------
-// Helper function: scrape FB name
+// Load getUserInfo
 // --------------------
-async function scrapeFbName(userId) {
-    if (!fs.existsSync('./cookie.json')) return "Handsome User";
-    const cookies = fs.readJsonSync('./cookie.json');
-    const cookieStr = cookies.map(c => `${c.key}=${c.value}`).join('; ');
+const getUserInfoFactory = require('./package/src/deltas/apis/users/getUserInfo');
+const getUserInfo = getUserInfoFactory(require('./package/src/utils'), null, { jar: {} }); // you can adjust ctx/jar if needed
 
+// --------------------
+// Helper function: fetch FB name
+// --------------------
+async function fetchFbName(userId) {
     try {
-        const res = await axios.get(`https://www.facebook.com/${userId}`, {
-            headers: {
-                'Cookie': cookieStr,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-            }
-        });
-
-        const $ = cheerio.load(res.data);
-        const name = $("title").text().split("|")[0].trim();
-        return (name && name !== "Facebook") ? name : "Handsome User";
+        const userInfo = await getUserInfo(userId, true);
+        return userInfo?.name || "Facebook User";
     } catch (err) {
-        return "Handsome User";
+        console.error("Error fetching user info:", err);
+        return "Facebook User";
     }
 }
 
+// --------------------
+// Stats endpoint
+// --------------------
 app.get('/stats', (req, res) => {
     const cmdDir = path.join(__dirname, 'cmds');
     const commandCount = fs.existsSync(cmdDir) ? fs.readdirSync(cmdDir).filter(f => f.endsWith('.js')).length : 0;
     res.json({ activeUsers: apiInstance ? 1 : 0, totalCommands: commandCount });
 });
 
+// --------------------
+// Login endpoint
+// --------------------
 app.post('/login', async (req, res) => {
     const { appState, prefix, adminID } = req.body;
     try {
         const cookies = JSON.parse(appState);
         config.prefix = prefix;
-        // adminID logic can be adjusted here if needed
         fs.writeJsonSync('./config.json', config, { spaces: 2 });
         fs.writeJsonSync('./cookie.json', cookies, { spaces: 2 });
 
@@ -80,7 +78,7 @@ app.post('/login', async (req, res) => {
             apiInstance = api;
             api.setOptions({ listenEvents: true, selfListen: false });
             const uid = api.getCurrentUserID();
-            const name = await scrapeFbName(uid);
+            const name = await fetchFbName(uid);
             res.json({ success: true, name, id: uid });
             startBot(api);
         });
@@ -89,6 +87,9 @@ app.post('/login', async (req, res) => {
     }
 });
 
+// --------------------
+// Event loader & bot starter
+// --------------------
 function loadEvents() {
     const eventsDir = path.join(__dirname, 'events');
     if (!fs.existsSync(eventsDir)) return [];
@@ -105,7 +106,7 @@ function startBot(api) {
         if (event.type === "event" && event.logMessageType === "log:subscribe") {
             const botID = api.getCurrentUserID();
             if (event.logMessageData.addedParticipants.some(i => i.userFbId === botID)) {
-                const adderName = await scrapeFbName(event.author);
+                const adderName = await fetchFbName(event.author);
                 const welcomeMsg = `**DOUGHNUT-BOT**\n${style.top}\n✨ 𝗔𝗱𝗱𝗲𝗱 𝘁𝗼 𝗮 𝗡𝗲𝘄 𝗚𝗿𝗼𝘂𝗽 𝗖𝗵𝗮𝘁! ✨\n\n` +
                     `Hello everyone! I'm 𝗗𝗼𝘂𝗴𝗵𝗻𝘂𝘁 𝗕𝗼𝘁, your automation assistant! 🍩🤖\n\n` +
                     `Type ❪ **${config.prefix}help** ❫ to see my commands.\n\n${style.top}\n` +
@@ -131,17 +132,13 @@ function startBot(api) {
                     if (typeof cmd.execute !== 'function') return;
 
                     const senderID = event.senderID;
-                    
-                    // --- ROLE DEFINITIONS ---
                     const isCreator = senderID === config.botCreatorUID;
                     const isBotAdmin = Array.isArray(config.adminUID) ? config.adminUID.includes(senderID) : senderID === config.adminUID;
 
-                    // 1.0 - Bot Creator Only
                     if (cmd.role === 1.0 && !isCreator) {
                         return api.sendMessage("❌ This command is for the bot creator only.", event.threadID, event.messageID);
                     }
 
-                    // 2.0 - GC Admin or Bot Creator/AdminBot
                     if (cmd.role === 2.0) {
                         return api.getThreadInfo(event.threadID, (err, info) => {
                             if (err) return;
@@ -153,9 +150,7 @@ function startBot(api) {
                         });
                     }
 
-                    // 0 - Everyone (Passed previous checks)
                     executeCommand(cmd, api, event, args);
-
                 } catch (error) {
                     console.error(error);
                 }
